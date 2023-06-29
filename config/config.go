@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /*
-	Package config defines the config structs and some config parser interfaces and implementations
+Package config defines the config structs and some config parser interfaces and implementations
 */
 package config
 
@@ -158,7 +158,8 @@ type ServiceConfig struct {
 	TLS *TLS `mapstructure:"tls"`
 
 	// run lura in debug mode
-	Debug     bool
+	Debug     bool `mapstructure:"debug_endpoint"`
+	Echo      bool `mapstructure:"echo_endpoint"`
 	uriParser URIParser
 
 	// SequentialStart flags if the agents should be started sequentially
@@ -168,6 +169,10 @@ type ServiceConfig struct {
 	// AllowInsecureConnections sets the http client tls configuration to allow
 	// insecure connections to the backends for development (enables InsecureSkipVerify)
 	AllowInsecureConnections bool `mapstructure:"allow_insecure_connections"`
+
+	// ClientTLS is used to configure the http default transport
+	// with TLS parameters
+	ClientTLS *ClientTLS `mapstructure:"client_tls"`
 }
 
 // AsyncAgent defines the configuration of a single subscriber/consumer to be initialized
@@ -252,6 +257,8 @@ type Backend struct {
 	Target string `mapstructure:"target"`
 	// name of the service discovery driver to use
 	SD string `mapstructure:"sd"`
+	// scheme to use for servers fetched from
+	SDScheme string `mapstructure:"sd_scheme"`
 
 	// list of keys to be replaced in the URLPattern
 	URLKeys []string
@@ -263,6 +270,8 @@ type Backend struct {
 	Decoder encoding.Decoder `json:"-"`
 	// Backend Extra configuration for customized behaviours
 	ExtraConfig ExtraConfig `mapstructure:"extra_config"`
+	// HeadersToPass defines the list of headers to pass to this backend
+	HeadersToPass []string `mapstructure:"input_headers"`
 }
 
 // Plugin contains the config required by the plugin module
@@ -276,12 +285,25 @@ type TLS struct {
 	IsDisabled               bool     `mapstructure:"disabled"`
 	PublicKey                string   `mapstructure:"public_key"`
 	PrivateKey               string   `mapstructure:"private_key"`
+	CaCerts                  []string `mapstructure:"ca_certs"`
 	MinVersion               string   `mapstructure:"min_version"`
 	MaxVersion               string   `mapstructure:"max_version"`
 	CurvePreferences         []uint16 `mapstructure:"curve_preferences"`
 	PreferServerCipherSuites bool     `mapstructure:"prefer_server_cipher_suites"`
 	CipherSuites             []uint16 `mapstructure:"cipher_suites"`
 	EnableMTLS               bool     `mapstructure:"enable_mtls"`
+	DisableSystemCaPool      bool     `mapstructure:"disable_system_ca_pool"`
+}
+
+// ClientTLS defines the configuration params for an HTTP Client
+type ClientTLS struct {
+	AllowInsecureConnections bool     `mapstructure:"allow_insecure_connections"`
+	CaCerts                  []string `mapstructure:"ca_certs"`
+	DisableSystemCaPool      bool     `mapstructure:"disable_system_ca_pool"`
+	MinVersion               string   `mapstructure:"min_version"`
+	MaxVersion               string   `mapstructure:"max_version"`
+	CurvePreferences         []uint16 `mapstructure:"curve_preferences"`
+	CipherSuites             []uint16 `mapstructure:"cipher_suites"`
 }
 
 // ExtraConfig is a type to store extra configurations for customized behaviours
@@ -314,7 +336,7 @@ var ExtraConfigAlias = map[string]string{}
 var (
 	simpleURLKeysPattern    = regexp.MustCompile(`\{([\w\-\.:/]+)\}`)
 	sequentialParamsPattern = regexp.MustCompile(`^(resp[\d]+_.+)?(JWT\.([\w\-\.:/]+))?$`)
-	debugPattern            = "^[^/]|/__debug(/.*)?$"
+	invalidPattern          = `^[^/]|\*.|/__(debug|echo|health)(/.*)?$`
 	errInvalidHost          = errors.New("invalid host")
 	errInvalidNoOpEncoding  = errors.New("can not use NoOp encoding with more than one backends connected to the same endpoint")
 	defaultPort             = 8080
@@ -383,7 +405,6 @@ func (s *ServiceConfig) initGlobalParams() {
 	}
 
 	s.Host = s.uriParser.CleanHosts(s.Host)
-
 	s.ExtraConfig.sanitize()
 }
 
@@ -429,8 +450,7 @@ func (s *ServiceConfig) initEndpoints() error {
 			inputSet[inputParams[ip]] = nil
 		}
 
-    s.addWildcardPlaceHoldersFromURLTemplate(e.Endpoint, inputSet)
-		  e.Endpoint = s.uriParser.GetEndpointPath(e.Endpoint, inputParams)
+		e.Endpoint = s.uriParser.GetEndpointPath(e.Endpoint, inputParams)
 
 		s.initEndpointDefaults(i)
 
@@ -467,15 +487,6 @@ func (*ServiceConfig) extractPlaceHoldersFromURLTemplate(subject string, pattern
 		keys[k] = v[1]
 	}
 	return keys
-}
-
-var wildcardPattern = regexp.MustCompile(`/\*([a-zA-Z\-_0-9]+)`)
-
-func (s *ServiceConfig) addWildcardPlaceHoldersFromURLTemplate(subject string, inputSet map[string]interface{}) {
-	matches := wildcardPattern.FindAllStringSubmatch(subject, -1)
-	for _, v := range matches {
-		inputSet[v[1]] = nil
-	}
 }
 
 func (s *ServiceConfig) initEndpointDefaults(e int) {
@@ -531,6 +542,13 @@ func (s *ServiceConfig) initBackendDefaults(e, b int) {
 	backend.Timeout = endpoint.Timeout
 	backend.ConcurrentCalls = endpoint.ConcurrentCalls
 	backend.Decoder = encoding.GetRegister().Get(strings.ToLower(backend.Encoding))(backend.IsCollection)
+
+	for i := range backend.HeadersToPass {
+		backend.HeadersToPass[i] = textproto.CanonicalMIMEHeaderKey(backend.HeadersToPass[i])
+	}
+	if backend.SDScheme == "" {
+		backend.SDScheme = "http"
+	}
 }
 
 func (s *ServiceConfig) initBackendURLMappings(e, b int, inputParams map[string]interface{}) error {
@@ -604,7 +622,7 @@ func uniqueOutput(output []string) ([]string, int) {
 }
 
 func (e *EndpointConfig) validate() error {
-	matched, err := regexp.MatchString(debugPattern, e.Endpoint)
+	matched, err := regexp.MatchString(invalidPattern, e.Endpoint)
 	if err != nil {
 		return &EndpointMatchError{
 			Err:    err,
@@ -648,7 +666,7 @@ func (n *NoBackendsError) Error() string {
 }
 
 // UnsupportedVersionError is the error returned by the configuration init process when the configuration
-// version is not supoprted
+// version is not supported
 type UnsupportedVersionError struct {
 	Have int
 	Want int
@@ -715,4 +733,13 @@ func (w *WrongNumberOfParamsError) Error() string {
 		w.InputParams,
 		w.OutputParams,
 	)
+}
+
+func SetSequentialParamsPattern(pattern string) error {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return err
+	}
+	sequentialParamsPattern = re
+	return nil
 }

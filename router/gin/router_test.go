@@ -44,14 +44,6 @@ func TestDefaultFactory_ok(t *testing.T) {
 	serviceCfg := config.ServiceConfig{
 		Port: 8072,
 		Endpoints: []*config.EndpointConfig{
-      {
-        Endpoint: "/some",
-        Method:   "HEAD",
-        Timeout:  10,
-        Backend: []*config.Backend{
-          {},
-        },
-      },
 			{
 				Endpoint: "/some",
 				Method:   "GET",
@@ -62,7 +54,7 @@ func TestDefaultFactory_ok(t *testing.T) {
 			},
 			{
 				Endpoint: "/some",
-				Method:   "POST",
+				Method:   "post",
 				Timeout:  10,
 				Backend: []*config.Backend{
 					{},
@@ -70,7 +62,7 @@ func TestDefaultFactory_ok(t *testing.T) {
 			},
 			{
 				Endpoint: "/some",
-				Method:   "PUT",
+				Method:   "put",
 				Timeout:  10,
 				Backend: []*config.Backend{
 					{},
@@ -105,47 +97,39 @@ func TestDefaultFactory_ok(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 
 	for _, endpoint := range serviceCfg.Endpoints {
-		t.Run(fmt.Sprintf("%s %s", endpoint.Method, endpoint.Endpoint), func(t *testing.T) {
-			req, _ := http.NewRequest(strings.ToTitle(endpoint.Method), fmt.Sprintf("http://127.0.0.1:8072%s", endpoint.Endpoint), nil)
-			req.Header.Set("Content-Type", "application/json")
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				t.Error("Making the request:", err.Error())
-				return
-			}
-			defer resp.Body.Close()
+		req, _ := http.NewRequest(strings.ToTitle(endpoint.Method), fmt.Sprintf("http://127.0.0.1:8072%s", endpoint.Endpoint), http.NoBody)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Error("Making the request:", err.Error())
+			return
+		}
+		defer resp.Body.Close()
 
-			body, ioerr := ioutil.ReadAll(resp.Body)
-			if ioerr != nil {
-				t.Error("Reading the response:", ioerr.Error())
-				return
-			}
-			content := string(body)
-			if resp.Header.Get("Cache-Control") != "" {
-				t.Error("Cache-Control error:", resp.Header.Get("Cache-Control"))
-			}
-			if resp.Header.Get(router.CompleteResponseHeaderName) != router.HeaderCompleteResponseValue {
-				t.Error(router.CompleteResponseHeaderName, "error:", resp.Header.Get(router.CompleteResponseHeaderName))
-			}
-			if resp.Header.Get("Content-Type") != "application/json; charset=utf-8" {
-				t.Error("Content-Type error:", resp.Header.Get("Content-Type"))
-			}
-			if resp.Header.Get("X-Krakend") != "Version undefined" {
-				t.Error("X-Krakend error:", resp.Header.Get("X-Krakend"))
-			}
-			if resp.StatusCode != http.StatusOK {
-				t.Error("Unexpected status code:", resp.StatusCode)
-			}
-			if endpoint.Method != http.MethodHead {
-				if content != expectedBody {
-					t.Error("Unexpected body:", content, "expected:", expectedBody)
-				}
-			} else {
-				if content != "" {
-					t.Error("Unexpected body:", content, "expected empty body")
-				}
-			}
-		})
+		body, ioerr := io.ReadAll(resp.Body)
+		if ioerr != nil {
+			t.Error("Reading the response:", ioerr.Error())
+			return
+		}
+		content := string(body)
+		if resp.Header.Get("Cache-Control") != "" {
+			t.Error("Cache-Control error:", resp.Header.Get("Cache-Control"))
+		}
+		if resp.Header.Get(server.CompleteResponseHeaderName) != server.HeaderCompleteResponseValue {
+			t.Error(server.CompleteResponseHeaderName, "error:", resp.Header.Get(server.CompleteResponseHeaderName))
+		}
+		if resp.Header.Get("Content-Type") != "application/json; charset=utf-8" {
+			t.Error("Content-Type error:", resp.Header.Get("Content-Type"))
+		}
+		if resp.Header.Get("X-Krakend") != "Version undefined" {
+			t.Error("X-Krakend error:", resp.Header.Get("X-Krakend"))
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Error("Unexpected status code:", resp.StatusCode)
+		}
+		if content != expectedBody {
+			t.Error("Unexpected body:", content, "expected:", expectedBody)
+		}
 	}
 
 	req, _ := http.NewRequest("OPTIONS", "http://127.0.0.1:8072/some", http.NoBody)
@@ -179,6 +163,7 @@ func TestDefaultFactory_ko(t *testing.T) {
 
 	serviceCfg := config.ServiceConfig{
 		Debug: true,
+		Echo:  true,
 		Port:  8073,
 		Endpoints: []*config.EndpointConfig{
 			{
@@ -213,11 +198,9 @@ func TestDefaultFactory_ko(t *testing.T) {
 		{"GET", "empty"},
 		{"PUT", "also-ignored"},
 	} {
-		t.Run(fmt.Sprintf("%s %s", subject[0], subject[1]), func(t *testing.T) {
-			req, _ := http.NewRequest(subject[0], fmt.Sprintf("http://127.0.0.1:8073/%s", subject[1]), nil)
-			req.Header.Set("Content-Type", "application/json")
-			checkResponseIs404(t, req)
-		})
+		req, _ := http.NewRequest(subject[0], fmt.Sprintf("http://127.0.0.1:8073/%s", subject[1]), http.NoBody)
+		req.Header.Set("Content-Type", "application/json")
+		checkResponseIs404(t, req)
 	}
 }
 
@@ -239,6 +222,7 @@ func TestDefaultFactory_proxyFactoryCrash(t *testing.T) {
 
 	serviceCfg := config.ServiceConfig{
 		Debug: true,
+		Echo:  true,
 		Port:  8074,
 		Endpoints: []*config.EndpointConfig{
 			{

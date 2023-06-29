@@ -40,6 +40,7 @@ func TestRunServer_TLS(t *testing.T) {
 				TLS: &config.TLS{
 					PublicKey:  "cert.pem",
 					PrivateKey: "key.pem",
+					CaCerts:    []string{"ca.pem"},
 				},
 			},
 			http.HandlerFunc(dummyHandler),
@@ -63,6 +64,26 @@ func TestRunServer_TLS(t *testing.T) {
 		t.Errorf("unexpected status code: %d", resp.StatusCode)
 		return
 	}
+
+	// now lets initialize the global default transport and use a regular
+	// client to connect to the server
+	InitHTTPDefaultTransport(config.ServiceConfig{
+		ClientTLS: &config.ClientTLS{
+			CaCerts:             []string{"ca.pem"},
+			DisableSystemCaPool: true,
+		},
+	})
+	rawClient := http.Client{}
+	resp, err = rawClient.Get(fmt.Sprintf("https://localhost:%d", port))
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("unexpected status code: %d", resp.StatusCode)
+		return
+	}
+
 	cancel()
 
 	if err = <-done; err != nil {
@@ -87,6 +108,7 @@ func TestRunServer_MTLS(t *testing.T) {
 				TLS: &config.TLS{
 					PublicKey:  "cert.pem",
 					PrivateKey: "key.pem",
+					CaCerts:    []string{"ca.pem"},
 					EnableMTLS: true,
 				},
 			},
@@ -260,7 +282,7 @@ func Test_parseTLSVersion(t *testing.T) {
 
 func Test_parseCurveIDs(t *testing.T) {
 	original := []uint16{1, 2, 3}
-	cs := parseCurveIDs(&config.TLS{CurvePreferences: original})
+	cs := parseCurveIDs(original)
 	for k, v := range cs {
 		if original[k] != uint16(v) {
 			t.Errorf("unexpected curves %v. expected: %v", cs, original)
@@ -270,7 +292,7 @@ func Test_parseCurveIDs(t *testing.T) {
 
 func Test_parseCipherSuites(t *testing.T) {
 	original := []uint16{1, 2, 3}
-	cs := parseCipherSuites(&config.TLS{CipherSuites: original})
+	cs := parseCipherSuites(original)
 	for k, v := range cs {
 		if original[k] != uint16(v) {
 			t.Errorf("unexpected ciphersuites %v. expected: %v", cs, original)
